@@ -1,68 +1,84 @@
 # ================================================================
 # backend\predict.py
-# Loads best_model.pth and predicts crop disease from an image
-# Usage: python -m backend.predict --image path/to/leaf.jpg
+# Loads trained ResNet-50, predicts disease from any crop image
+# Singleton pattern: model loaded once at startup, reused
 # ================================================================
-import json, argparse
-import torch
-import torch.nn as nn
-from torchvision.models import resnet50, ResNet50_Weights
-from PIL import Image
+import io, json, glob
 from pathlib import Path
+from typing import Union
+import torch
+import torch.nn.functional as F
+from torchvision.models import resnet50
+from PIL import Image
 from backend.transforms import INFERENCE_TRANSFORM
 
-MODEL_PATH      = Path("models/best_model.pth")
-CLASS_NAMES_PATH = Path("data/class_names.json")
-DEVICE          = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+MODEL_PATH     = Path("models/best_model.pth")
+DEVICE         = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+CONF_THRESHOLD = 0.40
 
-def load_model(model_path: Path = MODEL_PATH):
-    """Load trained ResNet-50 from checkpoint."""
-    checkpoint  = torch.load(model_path, map_location=DEVICE)
-    class_names = checkpoint["class_names"]
-    num_classes = len(class_names)
+# ── Singleton ───────────────────────────────────────────────────
+_MODEL       = None
+_CLASS_NAMES = None
 
-    model = resnet50(weights=None)
-    model.fc = nn.Sequential(
-        nn.Dropout(0.3),
-        nn.Linear(2048, num_classes)
-    )
-    model.load_state_dict(checkpoint["model_state"])
-    model.to(DEVICE)
-    model.eval()
-    return model, class_names
+def load_model():
+    global _MODEL, _CLASS_NAMES
+    if _MODEL is None:
+        print("[Predictor] Loading best_model.pth...")
+        checkpoint   = torch.load(MODEL_PATH, map_location=DEVICE)
+        _CLASS_NAMES = checkpoint["class_names"]
 
-def predict(image_path: str, top_k: int = 3):
+        model = resnet50()
+        model.fc = torch.nn.Sequential(
+            torch.nn.Dropout(0.3),
+            torch.nn.Linear(2048, len(_CLASS_NAMES))
+        )
+        model.load_state_dict(checkpoint["model_state"])
+        model.to(DEVICE)
+        model.eval()
+        _MODEL = model
+        print(f"[Predictor] Loaded. Classes: {len(_CLASS_NAMES)}, Val Acc: {checkpoint['val_acc']:.3f}")
+    return _MODEL, _CLASS_NAMES
+
+def predict(image_input: Union[str, Path, bytes], top_k: int = 3) -> dict:
     """
-    Predict crop disease from a leaf image.
-    Returns top_k predictions with confidence scores.
+    Predict crop disease from image.
+    Args:
+        image_input: file path (str/Path) OR raw bytes (from API upload)
+        top_k: how many top predictions to return
+    Returns dict with disease, confidence, top3, is_healthy, low_confidence
     """
     model, class_names = load_model()
 
-    image  = Image.open(image_path).convert("RGB")
-    tensor = INFERENCE_TRANSFORM(image).unsqueeze(0).to(DEVICE)
+    if isinstance(image_input, bytes):
+        img = Image.open(io.BytesIO(image_input)).convert("RGB")
+    else:
+        img = Image.open(image_input).convert("RGB")
+
+    tensor = INFERENCE_TRANSFORM(img).unsqueeze(0).to(DEVICE)
 
     with torch.no_grad():
-        outputs     = model(tensor)
-        probs       = torch.softmax(outputs, dim=1)[0]
-        top_probs, top_indices = torch.topk(probs, top_k)
+        logits             = model(tensor)
+        probs              = F.softmax(logits, dim=1)[0]
+        top_probs, top_idxs = torch.topk(probs, k=top_k)
 
-    results = []
-    for prob, idx in zip(top_probs, top_indices):
-        results.append({
-            "class"     : class_names[idx.item()],
-            "confidence": round(prob.item() * 100, 2)
-        })
+    top3 = [
+        {"disease": class_names[i.item()], "confidence": round(p.item(), 4)}
+        for p, i in zip(top_probs, top_idxs)
+    ]
+    best = top3[0]
 
-    return results
+    return {
+        "disease"       : best["disease"],
+        "confidence"    : best["confidence"],
+        "top3"          : top3,
+        "is_healthy"    : "healthy" in best["disease"].lower(),
+        "low_confidence": best["confidence"] < CONF_THRESHOLD,
+    }
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--image", required=True, help="Path to leaf image")
-    parser.add_argument("--top_k", type=int, default=3)
-    args = parser.parse_args()
-
-    results = predict(args.image, args.top_k)
-    print(f"\nPredictions for: {args.image}")
-    print("-" * 40)
-    for i, r in enumerate(results, 1):
-        print(f"  {i}. {r['class']:<45} {r['confidence']:>6.2f}%")
+    test_images = glob.glob("data/processed/test/**/*.jpg", recursive=True)[:10]
+    for img_path in test_images:
+        result     = predict(img_path)
+        true_label = Path(img_path).parent.name
+        correct    = true_label == result["disease"]
+        print(f"{'✓' if correct else '✗'} True: {true_label[:40]:<40} Pred: {result['disease'][:35]} ({result['confidence']:.2f})")
