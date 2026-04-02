@@ -5,6 +5,7 @@
 import os
 from pathlib import Path
 from dotenv import load_dotenv
+from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
 
 load_dotenv()
 
@@ -25,7 +26,8 @@ if not GROQ_API_KEY:
     raise ValueError("GROQ_API_KEY not found in .env file")
 
 #  Embedding Model 
-EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+# Change this line in config.py
+EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 
 #  RAG Chunking 
 # 250 words (not 300 like Aarogya AI)
