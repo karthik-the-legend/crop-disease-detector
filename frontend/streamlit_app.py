@@ -1,4 +1,4 @@
-﻿# ================================================================
+# ================================================================
 # frontend\streamlit_app.py
 # Crop Disease Detector — Streamlit Frontend
 # Run: streamlit run frontend\streamlit_app.py
@@ -16,7 +16,7 @@ st.set_page_config(
     initial_sidebar_state = "expanded",
 )
 
-API_BASE = "http://localhost:8000"
+API_BASE = "http://localhost:8001"
 
 LANG_MAP = {
     "Telugu" : "te",
