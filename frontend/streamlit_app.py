@@ -1,18 +1,19 @@
-# ================================================================
+﻿# ================================================================
 # frontend\streamlit_app.py
-# Crop Disease Detector — Streamlit Frontend
-# Run: streamlit run frontend\streamlit_app.py
-# Requires: FastAPI backend at http://localhost:8000
+# Crop Disease Detector — Day 20 Version
+# Added: Groq Vision explanation + Top-3 bar chart + Voice upload
 # ================================================================
 import io, json, requests
 import streamlit as st
+import plotly.express as px
+import pandas as pd
 from PIL import Image
 
-#  Page config — must be FIRST st command 
+#  Page config 
 st.set_page_config(
-    page_title         = " Crop Disease Detector",
-    page_icon          = "",
-    layout             = "wide",
+    page_title            = " Crop Disease Detector",
+    page_icon             = "",
+    layout                = "wide",
     initial_sidebar_state = "expanded",
 )
 
@@ -35,7 +36,6 @@ SEVERITY_STYLES = {
 
 #  Helpers 
 def diagnose_image(img_bytes: bytes, lang_code: str) -> dict:
-    """Call POST /diagnose and return parsed JSON."""
     try:
         r = requests.post(
             f"{API_BASE}/diagnose?lang_code={lang_code}",
@@ -45,7 +45,7 @@ def diagnose_image(img_bytes: bytes, lang_code: str) -> dict:
         r.raise_for_status()
         return r.json()
     except requests.exceptions.ConnectionError:
-        st.error("Cannot connect to FastAPI backend. Make sure it is running at localhost:8000")
+        st.error("Cannot connect to backend. Make sure it is running at localhost:8001")
         return {}
     except Exception as e:
         st.error(f"Error: {e}")
@@ -53,7 +53,6 @@ def diagnose_image(img_bytes: bytes, lang_code: str) -> dict:
 
 
 def check_backend() -> bool:
-    """Check if FastAPI backend is reachable."""
     try:
         r = requests.get(f"{API_BASE}/health", timeout=3)
         return r.status_code == 200
@@ -62,7 +61,6 @@ def check_backend() -> bool:
 
 
 def render_severity_badge(level: str):
-    """Render a coloured severity badge using HTML."""
     emoji, colour, label = SEVERITY_STYLES.get(level, SEVERITY_STYLES["mild"])
     st.markdown(
         f'<span style="background:{colour}22;color:{colour};'
@@ -71,7 +69,116 @@ def render_severity_badge(level: str):
         f'{emoji} {label}</span>',
         unsafe_allow_html=True,
     )
-    st.markdown("")   # spacing
+    st.markdown("")
+
+
+def render_top3_chart(top3: list):
+    """Horizontal bar chart of top-3 CNN predictions using Plotly."""
+    if not top3:
+        return
+    names = [
+        p.get("disease", "")
+         .replace("___", " — ")
+         .replace("__", " ")
+         .replace("_", " ")[:35]
+        for p in top3
+    ]
+    confs = [round(p.get("confidence", 0) * 100, 1) for p in top3]
+
+    df = pd.DataFrame({"Disease": names, "Confidence %": confs})
+    fig = px.bar(
+        df,
+        x           = "Confidence %",
+        y           = "Disease",
+        orientation = "h",
+        color       = "Confidence %",
+        color_continuous_scale = ["#28a745", "#ffc107", "#dc3545"],
+        range_x     = [0, 100],
+        title       = "Top-3 CNN Predictions",
+        text        = "Confidence %",
+    )
+    fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+    fig.update_layout(
+        height          = 200,
+        margin          = dict(l=0, r=40, t=40, b=0),
+        showlegend      = False,
+        coloraxis_showscale = False,
+        plot_bgcolor    = "rgba(0,0,0,0)",
+        paper_bgcolor   = "rgba(0,0,0,0)",
+        font_color      = "#ffffff",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_result(result: dict, lang_name: str):
+    """Render full diagnosis result block."""
+    if not result:
+        return
+
+    disease    = result.get("disease_name", "Unknown")
+    conf       = result.get("confidence", 0)
+    severity   = result.get("severity", "mild")
+    treatment  = result.get("treatment", "")
+    sources    = result.get("sources", [])
+    latency    = result.get("latency_ms", 0)
+    is_healthy = result.get("is_healthy", False)
+    low_conf   = result.get("low_confidence", False)
+    top3       = result.get("top3", [])
+    groq_exp   = result.get("gemini_explanation")
+
+    display_name = (
+        disease
+        .replace("___", " — ")
+        .replace("__",  " ")
+        .replace("_",   " ")
+    )
+
+    # Disease header
+    if is_healthy:
+        st.markdown("###  Plant Appears Healthy")
+    else:
+        st.markdown(f"###  {display_name}")
+
+    # Severity badge
+    render_severity_badge(severity)
+
+    # Low confidence warning
+    if low_conf:
+        st.warning(" Low confidence — retake photo in better lighting.")
+
+    # Confidence bar
+    st.markdown(f"**CNN Confidence: {conf*100:.1f}%**")
+    st.progress(float(conf))
+    st.caption(f" {latency}ms | Language: {lang_name}")
+
+    # Top-3 chart — show only when low confidence
+    if low_conf and top3:
+        render_top3_chart(top3)
+    elif top3:
+        with st.expander(" Top 3 Predictions"):
+            render_top3_chart(top3)
+
+    st.divider()
+
+    # Groq Vision explanation (XAI layer)
+    if groq_exp:
+        st.markdown("####  Visual AI Explanation")
+        st.info(f"**Groq Vision observed:** {groq_exp}")
+        st.divider()
+
+    # Treatment
+    st.markdown("###  Treatment Advice")
+    st.markdown(treatment)
+
+    # Sources
+    if sources:
+        with st.expander(f" Sources ({len(sources)} verified passages)"):
+            st.caption("Every recommendation is grounded in these documents.")
+            for s in sources:
+                st.markdown(f"** {s['source']} — Page {s['page']+1}**")
+                st.caption(str(s.get("content", ""))[:200] + "...")
+
+    st.divider()
 
 
 #  Sidebar 
@@ -79,12 +186,8 @@ with st.sidebar:
     st.markdown("##  Crop Disease Detector")
     st.markdown("---")
 
-    selected_lang = st.selectbox(
-        " Select Your Language",
-        list(LANG_MAP.keys()),
-        index=0,
-    )
-    lang_code = LANG_MAP[selected_lang]
+    selected_lang = st.selectbox(" Select Your Language", list(LANG_MAP.keys()), index=0)
+    lang_code     = LANG_MAP[selected_lang]
 
     st.markdown("---")
     st.markdown("###  Knowledge Base")
@@ -94,13 +197,10 @@ with st.sidebar:
     st.markdown(" 54,306 Training Images")
 
     st.markdown("---")
-
-    # Backend status indicator
-    backend_ok = check_backend()
-    if backend_ok:
+    if check_backend():
         st.success(" Backend: Online")
     else:
-        st.error(" Backend: Offline\nRun: uvicorn backend.main:app --port 8000")
+        st.error(" Backend: Offline\nRun: uvicorn backend.main:app --port 8001")
 
     st.markdown("---")
     st.warning(
@@ -110,27 +210,27 @@ with st.sidebar:
     )
 
 
-#  Main area 
+#  Main 
 st.title(" Crop Disease Detector")
 st.caption(
     f"CNN ResNet-50 + Groq Vision + RAG Treatment  "
     f"ICAR / FAO Sources  Language: {selected_lang}"
 )
 
-# Metric row
 c1, c2, c3, c4 = st.columns(4)
-c1.metric(" Diseases", "38 classes")
+c1.metric(" Diseases",        "38 classes")
 c2.metric(" Training Images", "54,306")
-c3.metric(" Languages", "4 Indian")
-c4.metric(" PDF Sources", "10 ICAR/FAO")
+c3.metric(" Languages",       "4 Indian")
+c4.metric(" PDF Sources",     "10 ICAR/FAO")
 
 st.divider()
 
-#  Image upload 
+#  Section 1: Image-only upload 
+st.markdown("###  Upload Crop Leaf Photo")
 uploaded = st.file_uploader(
-    " Upload a crop leaf photo",
-    type    = ["jpg", "jpeg", "png"],
-    help    = "Upload a clear photo of a single crop leaf for disease detection",
+    "Upload a crop leaf photo",
+    type = ["jpg", "jpeg", "png"],
+    help = "Upload a clear photo of a single crop leaf",
 )
 
 if uploaded:
@@ -141,88 +241,73 @@ if uploaded:
         st.caption(f"File: {uploaded.name} | Size: {len(uploaded.getvalue())//1024}KB")
 
     with col_result:
-        with st.spinner(" Analysing disease — this may take 5-10 seconds..."):
+        with st.spinner(" Analysing — this may take 5-10 seconds..."):
             result = diagnose_image(uploaded.getvalue(), lang_code)
+        render_result(result, selected_lang)
 
-        if result:
-            disease    = result.get("disease_name", "Unknown")
-            conf       = result.get("confidence", 0)
-            severity   = result.get("severity", "mild")
-            treatment  = result.get("treatment", "")
-            sources    = result.get("sources", [])
-            latency    = result.get("latency_ms", 0)
-            is_healthy = result.get("is_healthy", False)
-            low_conf   = result.get("low_confidence", False)
-            top3       = result.get("top3", [])
-            gemini_exp = result.get("gemini_explanation")
-
-            # Clean disease name
-            display_name = (
-                disease
-                .replace("___", " — ")
-                .replace("__",  " ")
-                .replace("_",   " ")
-            )
-
-            # Disease name header
-            if is_healthy:
-                st.markdown("###  Plant Appears Healthy")
-            else:
-                st.markdown(f"###  {display_name}")
-
-            # Severity badge
-            render_severity_badge(severity)
-
-            # Low confidence warning
-            if low_conf:
-                st.warning(" Low confidence — consider retaking photo in better lighting.")
-
-            # Confidence bar
-            st.markdown(f"**CNN Confidence: {conf*100:.1f}%**")
-            st.progress(float(conf))
-            st.caption(f" Response time: {latency}ms | Language: {selected_lang}")
-
-            # Top-3 predictions
-            if top3:
-                with st.expander(" Top 3 Predictions"):
-                    for p in top3:
-                        pname = (
-                            p.get("disease", "")
-                            .replace("___", " — ")
-                            .replace("_", " ")
-                        )
-                        pconf = p.get("confidence", 0)
-                        st.markdown(f"**{pname}** — {pconf*100:.1f}%")
-                        st.progress(float(pconf))
-
-            st.divider()
-
-            # Gemini/Groq Vision explanation
-            if gemini_exp:
-                with st.expander(" Visual AI Explanation (Groq Vision)"):
-                    st.info(gemini_exp)
-
-            # Treatment
-            st.markdown("###  Treatment Advice")
-            st.markdown(treatment)
-
-            # Sources
-            if sources:
-                with st.expander(f" Sources Used ({len(sources)} verified passages)"):
-                    st.caption(
-                        "Every recommendation comes from these "
-                        "verified agricultural documents."
-                    )
-                    for s in sources:
-                        st.markdown(f"** {s['source']} — Page {s['page']+1}**")
-                        st.caption(str(s.get('content', ''))[:200] + "...")
-
-            st.divider()
-
-elif not uploaded:
-    # Placeholder when no image uploaded
+else:
     st.info(
         " Upload a crop leaf photo above to get started.\n\n"
         "The AI will detect the disease, assess severity, and provide "
         "treatment advice from ICAR/FAO sources in your language."
     )
+
+#  Section 2: Voice + Image upload 
+st.markdown("---")
+st.markdown("###  Or Upload Image + Voice Together")
+st.caption("Whisper auto-detects your language from voice — no need to select manually")
+
+col_v1, col_v2 = st.columns(2)
+
+with col_v1:
+    st.markdown("** Crop leaf photo**")
+    voice_image = st.file_uploader(
+        "Crop leaf photo for voice diagnosis",
+        type             = ["jpg", "jpeg", "png"],
+        key              = "voice_image",
+        label_visibility = "collapsed",
+    )
+
+with col_v2:
+    st.markdown("** Voice note (Hindi/Telugu/Tamil/Kannada/English)**")
+    voice_audio = st.file_uploader(
+        "Voice note",
+        type             = ["mp3", "wav", "ogg", "m4a"],
+        key              = "voice_audio",
+        label_visibility = "collapsed",
+    )
+
+if voice_image and voice_audio:
+    st.audio(voice_audio, format=voice_audio.type)
+
+    if st.button(" Diagnose with Voice", type="primary"):
+        with st.spinner(" Whisper transcribing + analysing..."):
+            try:
+                r = requests.post(
+                    f"{API_BASE}/diagnose-voice",
+                    files = {
+                        "image": (voice_image.name, voice_image.getvalue(), "image/jpeg"),
+                        "audio": (voice_audio.name, voice_audio.getvalue(), voice_audio.type),
+                    },
+                    timeout = 120,
+                )
+                r.raise_for_status()
+                vr = r.json()
+
+                transcript = vr.get("transcript", "")
+                v_lang     = vr.get("transcript_language", "unknown")
+                st.success(f" Whisper heard ({v_lang}): **{transcript}**")
+
+                col_vi, col_vr = st.columns([1, 2])
+                with col_vi:
+                    st.image(voice_image, caption="Uploaded Leaf", use_container_width=True)
+                with col_vr:
+                    render_result(vr, v_lang)
+
+            except Exception as e:
+                st.error(f"Voice diagnosis failed: {e}")
+
+elif voice_image and not voice_audio:
+    st.caption(" Add a voice note to use voice diagnosis")
+elif voice_audio and not voice_image:
+    st.caption(" Add a leaf photo to use voice diagnosis")
