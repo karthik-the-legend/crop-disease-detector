@@ -1,4 +1,4 @@
-# ================================================================
+﻿# ================================================================
 # backend\transforms.py
 # Training: augment aggressively to prevent overfitting
 # Validation/Test: only resize and normalise (no augmentation)
@@ -6,21 +6,26 @@
 # ================================================================
 from torchvision import transforms
 
+# ImageNet normalisation values — required for pretrained ResNet
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD  = [0.229, 0.224, 0.225]
 IMG_SIZE      = 224
 
+# Training: aggressive augmentation to prevent overfitting
 TRAIN_TRANSFORMS = transforms.Compose([
     transforms.Resize((256, 256)),
     transforms.RandomCrop(224),
     transforms.RandomHorizontalFlip(p=0.5),
     transforms.RandomVerticalFlip(p=0.3),
     transforms.RandomRotation(degrees=30),
-    transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
+    transforms.ColorJitter(
+        brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1
+    ),
     transforms.ToTensor(),
     transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
 ])
 
+# Validation/Test: no augmentation
 VAL_TRANSFORMS = transforms.Compose([
     transforms.Resize((256, 256)),
     transforms.CenterCrop(224),
@@ -28,4 +33,5 @@ VAL_TRANSFORMS = transforms.Compose([
     transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
 ])
 
+# Inference: same as validation
 INFERENCE_TRANSFORM = VAL_TRANSFORMS
