@@ -3,6 +3,7 @@ models/*.pth
 
 # Data (too large for GitHub)
 data/processed/
+data/raw/
 plantvillage_raw/
 *.zip
 
@@ -12,6 +13,7 @@ __pycache__/
 .Python
 env/
 venv/
+.env
 
 # Jupyter
 .ipynb_checkpoints
