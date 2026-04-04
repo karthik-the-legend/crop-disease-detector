@@ -1,6 +1,7 @@
-env/
-.env
-data/raw/
+models/*.pth
+data/processed/
+plantvillage_raw/
+*.zip
 __pycache__/
-*.pyc
-*.pth
+.ipynb_checkpoints
+.DS_Store
