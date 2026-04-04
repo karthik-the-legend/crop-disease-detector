@@ -10,6 +10,19 @@ import pandas as pd
 from gtts import gTTS
 from PIL import Image
 
+import gdown
+import os
+
+MODEL_PATH = "models/best_model.pth"
+os.makedirs("models", exist_ok=True)
+
+# Download model from Google Drive if not exists or too small (old model)
+if not os.path.exists(MODEL_PATH) or os.path.getsize(MODEL_PATH) < 100000000:
+    print("Downloading trained model from Google Drive...")
+    url = "https://drive.google.com/uc?id=1uTMU4NsYLAO2vhqqLR6u7rQ2KZ66pgXk"
+    gdown.download(url, MODEL_PATH, quiet=False)
+    print("Model downloaded successfully!")
+
 #  Page config 
 st.set_page_config(
     page_title            = " Crop Disease Detector",
