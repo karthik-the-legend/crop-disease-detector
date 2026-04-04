@@ -1,12 +1,13 @@
 ﻿# ================================================================
 # frontend\streamlit_app.py
-# Crop Disease Detector — Day 20 Version
-# Added: Groq Vision explanation + Top-3 bar chart + Voice upload
+# Crop Disease Detector — Day 21 Version
+# Added: gTTS audio + config.toml theme + custom CSS
 # ================================================================
 import io, json, requests
 import streamlit as st
 import plotly.express as px
 import pandas as pd
+from gtts import gTTS
 from PIL import Image
 
 #  Page config 
@@ -17,6 +18,38 @@ st.set_page_config(
     initial_sidebar_state = "expanded",
 )
 
+#  Custom CSS 
+st.markdown("""
+<style>
+    .stProgress > div > div { background: #1a6b52 !important; }
+    .streamlit-expanderHeader {
+        font-size: 0.8rem !important;
+        color: #55ddaa !important;
+        background: #1a2820 !important;
+        border-radius: 4px !important;
+    }
+    [data-testid="metric-container"] {
+        background: #1a1d24;
+        border: 1px solid #333;
+        border-radius: 6px;
+    }
+    footer { visibility: hidden; }
+    .main .block-container { padding-top: 1.5rem; }
+    .severity-critical {
+        background: #dc354522;
+        border: 1px solid #dc354555;
+        border-radius: 8px;
+        padding: 10px 16px;
+    }
+    .severity-moderate {
+        background: #ffc10722;
+        border: 1px solid #ffc10755;
+        border-radius: 8px;
+        padding: 10px 16px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 API_BASE = "http://localhost:8001"
 
 LANG_MAP = {
@@ -26,6 +59,8 @@ LANG_MAP = {
     "Kannada": "kn",
     "English": "en",
 }
+
+GTTS_LANG = {"hi": "hi", "te": "te", "ta": "ta", "kn": "kn", "en": "en"}
 
 SEVERITY_STYLES = {
     "critical": ("", "#dc3545", "CRITICAL — Apply treatment TODAY"),
@@ -45,7 +80,7 @@ def diagnose_image(img_bytes: bytes, lang_code: str) -> dict:
         r.raise_for_status()
         return r.json()
     except requests.exceptions.ConnectionError:
-        st.error("Cannot connect to backend. Make sure it is running at localhost:8001")
+        st.error("Cannot connect to backend. Run: uvicorn backend.main:app --port 8001")
         return {}
     except Exception as e:
         st.error(f"Error: {e}")
@@ -58,6 +93,23 @@ def check_backend() -> bool:
         return r.status_code == 200
     except Exception:
         return False
+
+
+@st.cache_data(show_spinner=False)
+def text_to_speech(text: str, lang_code: str) -> bytes:
+    """
+    Convert treatment text to speech using gTTS.
+    Cached so same text+language never regenerates in same session.
+    """
+    gtts_lang = GTTS_LANG.get(lang_code, "en")
+    try:
+        tts = gTTS(text=text[:500], lang=gtts_lang, slow=False)
+        buf = io.BytesIO()
+        tts.write_to_fp(buf)
+        buf.seek(0)
+        return buf.read()
+    except Exception:
+        return b""   # TTS failure must never break the app
 
 
 def render_severity_badge(level: str):
@@ -73,7 +125,6 @@ def render_severity_badge(level: str):
 
 
 def render_top3_chart(top3: list):
-    """Horizontal bar chart of top-3 CNN predictions using Plotly."""
     if not top3:
         return
     names = [
@@ -84,34 +135,32 @@ def render_top3_chart(top3: list):
         for p in top3
     ]
     confs = [round(p.get("confidence", 0) * 100, 1) for p in top3]
-
-    df = pd.DataFrame({"Disease": names, "Confidence %": confs})
-    fig = px.bar(
+    df    = pd.DataFrame({"Disease": names, "Confidence %": confs})
+    fig   = px.bar(
         df,
-        x           = "Confidence %",
-        y           = "Disease",
-        orientation = "h",
-        color       = "Confidence %",
+        x                      = "Confidence %",
+        y                      = "Disease",
+        orientation            = "h",
+        color                  = "Confidence %",
         color_continuous_scale = ["#28a745", "#ffc107", "#dc3545"],
-        range_x     = [0, 100],
-        title       = "Top-3 CNN Predictions",
-        text        = "Confidence %",
+        range_x                = [0, 100],
+        title                  = "Top-3 CNN Predictions",
+        text                   = "Confidence %",
     )
     fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
     fig.update_layout(
-        height          = 200,
-        margin          = dict(l=0, r=40, t=40, b=0),
-        showlegend      = False,
+        height              = 200,
+        margin              = dict(l=0, r=40, t=40, b=0),
+        showlegend          = False,
         coloraxis_showscale = False,
-        plot_bgcolor    = "rgba(0,0,0,0)",
-        paper_bgcolor   = "rgba(0,0,0,0)",
-        font_color      = "#ffffff",
+        plot_bgcolor        = "rgba(0,0,0,0)",
+        paper_bgcolor       = "rgba(0,0,0,0)",
+        font_color          = "#ffffff",
     )
     st.plotly_chart(fig, use_container_width=True)
 
 
-def render_result(result: dict, lang_name: str):
-    """Render full diagnosis result block."""
+def render_result(result: dict, lang_name: str, lang_code: str, auto_tts: bool):
     if not result:
         return
 
@@ -134,24 +183,20 @@ def render_result(result: dict, lang_name: str):
     )
 
     # Disease header
-    if is_healthy:
-        st.markdown("###  Plant Appears Healthy")
-    else:
-        st.markdown(f"###  {display_name}")
+    st.markdown(f"### {' Plant Appears Healthy' if is_healthy else ' ' + display_name}")
 
     # Severity badge
     render_severity_badge(severity)
 
-    # Low confidence warning
     if low_conf:
         st.warning(" Low confidence — retake photo in better lighting.")
 
-    # Confidence bar
+    # Confidence
     st.markdown(f"**CNN Confidence: {conf*100:.1f}%**")
     st.progress(float(conf))
     st.caption(f" {latency}ms | Language: {lang_name}")
 
-    # Top-3 chart — show only when low confidence
+    # Top-3 chart
     if low_conf and top3:
         render_top3_chart(top3)
     elif top3:
@@ -160,20 +205,30 @@ def render_result(result: dict, lang_name: str):
 
     st.divider()
 
-    # Groq Vision explanation (XAI layer)
+    # Groq Vision XAI explanation
     if groq_exp:
         st.markdown("####  Visual AI Explanation")
         st.info(f"**Groq Vision observed:** {groq_exp}")
         st.divider()
 
-    # Treatment
+    # Treatment text
     st.markdown("###  Treatment Advice")
     st.markdown(treatment)
+
+    # gTTS audio playback
+    if auto_tts and treatment:
+        with st.spinner(" Generating audio..."):
+            audio_bytes = text_to_speech(treatment, lang_code)
+        if audio_bytes:
+            st.markdown("** Listen to treatment advice:**")
+            st.audio(audio_bytes, format="audio/mp3", start_time=0)
+        else:
+            st.caption(" Audio unavailable — check internet connection")
 
     # Sources
     if sources:
         with st.expander(f" Sources ({len(sources)} verified passages)"):
-            st.caption("Every recommendation is grounded in these documents.")
+            st.caption("Every recommendation is grounded in these verified documents.")
             for s in sources:
                 st.markdown(f"** {s['source']} — Page {s['page']+1}**")
                 st.caption(str(s.get("content", ""))[:200] + "...")
@@ -195,6 +250,9 @@ with st.sidebar:
     st.markdown(" FAO Pesticide Bulletins")
     st.markdown(" 38 Disease Classes")
     st.markdown(" 54,306 Training Images")
+
+    st.markdown("---")
+    auto_tts = st.checkbox(" Auto-play treatment audio", value=True)
 
     st.markdown("---")
     if check_backend():
@@ -225,7 +283,7 @@ c4.metric(" PDF Sources",     "10 ICAR/FAO")
 
 st.divider()
 
-#  Section 1: Image-only upload 
+#  Section 1: Image upload 
 st.markdown("###  Upload Crop Leaf Photo")
 uploaded = st.file_uploader(
     "Upload a crop leaf photo",
@@ -235,16 +293,13 @@ uploaded = st.file_uploader(
 
 if uploaded:
     col_img, col_result = st.columns([1, 2])
-
     with col_img:
         st.image(uploaded, caption="Uploaded Leaf", use_container_width=True)
         st.caption(f"File: {uploaded.name} | Size: {len(uploaded.getvalue())//1024}KB")
-
     with col_result:
         with st.spinner(" Analysing — this may take 5-10 seconds..."):
             result = diagnose_image(uploaded.getvalue(), lang_code)
-        render_result(result, selected_lang)
-
+        render_result(result, selected_lang, lang_code, auto_tts)
 else:
     st.info(
         " Upload a crop leaf photo above to get started.\n\n"
@@ -252,24 +307,22 @@ else:
         "treatment advice from ICAR/FAO sources in your language."
     )
 
-#  Section 2: Voice + Image upload 
+#  Section 2: Voice + Image 
 st.markdown("---")
 st.markdown("###  Or Upload Image + Voice Together")
-st.caption("Whisper auto-detects your language from voice — no need to select manually")
+st.caption("Whisper auto-detects your language — no need to select manually")
 
 col_v1, col_v2 = st.columns(2)
-
 with col_v1:
     st.markdown("** Crop leaf photo**")
     voice_image = st.file_uploader(
-        "Crop leaf photo for voice diagnosis",
+        "Crop leaf photo",
         type             = ["jpg", "jpeg", "png"],
         key              = "voice_image",
         label_visibility = "collapsed",
     )
-
 with col_v2:
-    st.markdown("** Voice note (Hindi/Telugu/Tamil/Kannada/English)**")
+    st.markdown("** Voice note (any Indian language)**")
     voice_audio = st.file_uploader(
         "Voice note",
         type             = ["mp3", "wav", "ogg", "m4a"],
@@ -279,30 +332,30 @@ with col_v2:
 
 if voice_image and voice_audio:
     st.audio(voice_audio, format=voice_audio.type)
-
     if st.button(" Diagnose with Voice", type="primary"):
         with st.spinner(" Whisper transcribing + analysing..."):
             try:
                 r = requests.post(
                     f"{API_BASE}/diagnose-voice",
-                    files = {
+                    files   = {
                         "image": (voice_image.name, voice_image.getvalue(), "image/jpeg"),
                         "audio": (voice_audio.name, voice_audio.getvalue(), voice_audio.type),
                     },
                     timeout = 120,
                 )
                 r.raise_for_status()
-                vr = r.json()
-
+                vr         = r.json()
                 transcript = vr.get("transcript", "")
                 v_lang     = vr.get("transcript_language", "unknown")
+                v_code     = vr.get("lang_code", "en")
+
                 st.success(f" Whisper heard ({v_lang}): **{transcript}**")
 
                 col_vi, col_vr = st.columns([1, 2])
                 with col_vi:
                     st.image(voice_image, caption="Uploaded Leaf", use_container_width=True)
                 with col_vr:
-                    render_result(vr, v_lang)
+                    render_result(vr, v_lang, v_code, auto_tts)
 
             except Exception as e:
                 st.error(f"Voice diagnosis failed: {e}")
